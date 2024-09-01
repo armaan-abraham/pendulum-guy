@@ -3,6 +3,30 @@
 # Exit on any error
 set -e
 
+# GitHub configuration
+GIT_EMAIL="armaan.abraham@hotmail.com"
+REPO_URL="https://github.com/armaan-abraham/recursive-intention.git"
+
+# Configure Git
+git config --global user.email "$GIT_EMAIL"
+echo "Git email set to $GIT_EMAIL"
+
+# Ask for GitHub access token
+echo "Please enter your GitHub access token:"
+read -s GITHUB_TOKEN
+
+# Test the token
+if curl -s -H "Authorization: token $GITHUB_TOKEN" https://api.github.com/user | grep -q "login"; then
+    echo "GitHub authentication successful"
+else
+    echo "GitHub authentication failed. Please check your token and try again."
+    exit 1
+fi
+
+# Clone the repository
+git clone https://$GITHUB_TOKEN@github.com/armaan-abraham/recursive-intention.git
+cd recursive-intention
+
 # Install pyenv if not already installed
 if ! command -v pyenv &> /dev/null; then
     echo "Installing pyenv..."
@@ -17,13 +41,16 @@ if ! command -v pyenv &> /dev/null; then
     exec "$SHELL"
 fi
 
-# Install Python 3.11 (or the version specified in .python-version)
-PYTHON_VERSION=$(cat .python-version)
-if [ -z "$PYTHON_VERSION" ]; then
-    PYTHON_VERSION="3.11.0"
-fi
+# Ask for Python version
+echo "Please enter the Python version you want to use (e.g., 3.11.0):"
+read PYTHON_VERSION
+
+# Install specified Python version
 pyenv install -s $PYTHON_VERSION
 pyenv local $PYTHON_VERSION
+
+# Update .python-version file
+echo $PYTHON_VERSION > .python-version
 
 # Install poetry if not already installed
 if ! command -v poetry &> /dev/null; then
