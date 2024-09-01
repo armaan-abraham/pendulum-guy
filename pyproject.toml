@@ -1,0 +1,21 @@
+[tool.poetry]
+name = "recursive-intention"
+version = "0.1.0"
+description = "Recursive intention learning."
+authors = ["Armaan Abraham <armaanabraham@g.ucla.edu>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.11"
+numpy = "^2.1.0"
+ruff = "^0.6.3"
+gymnasium-robotics = "^1.2.4"
+torch = "^2.4.0"
+ipykernel = "^6.29.5"
+
+[tool.poetry.group.dev.dependencies]
+ruff = "^0.6.3"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
