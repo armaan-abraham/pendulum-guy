@@ -12,6 +12,7 @@ ruff = "^0.6.3"
 gymnasium-robotics = "^1.2.4"
 torch = "^2.4.0"
 ipykernel = "^6.29.5"
+tqdm = "^4.66.5"
 
 [tool.poetry.group.dev.dependencies]
 ruff = "^0.6.3"
