@@ -5,6 +5,9 @@ import torch.optim as optim
 import gymnasium as gym
 from gymnasium.vector import AsyncVectorEnv
 from tqdm import tqdm
+from pathlib import Path
+
+WEIGHTS_DIR = Path(__file__).parent / "weights"
 
 # Add this at the beginning of the file
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -28,14 +31,14 @@ class Actor(nn.Module):
             nn.Linear(1024, 1024),
             nn.ReLU(),
             nn.Linear(1024, action_dim),
+            nn.Tanh()
         )
         self.action_low = torch.FloatTensor(action_low).to(device)
         self.action_high = torch.FloatTensor(action_high).to(device)
         self.to(device)
 
     def forward(self, state):
-        x = self.layers(state)
-        return self.action_low + (self.action_high - self.action_low) * torch.sigmoid(x)
+        return self.action_high * self.layers(state)
 
 class Critic(nn.Module):
     def __init__(self, state_dim, action_dim):
@@ -51,18 +54,19 @@ class Critic(nn.Module):
             nn.ReLU(),
             nn.Linear(1024, 1024),
             nn.ReLU(),
-            nn.Linear(1024, 1)
+            nn.Linear(1024, 1),
+            nn.Sigmoid(),
         )
         self.to(device)
 
     def forward(self, state, action):
         x = torch.cat([state, action], dim=1)
-        return self.layers(x)
+        return self.layers(x) - 1
 
 class DDPGAgent:
     def __init__(self, state_dim, action_dim, action_low, action_high):
         self.actor = Actor(state_dim, action_dim, action_low, action_high)
-        self.actor_optimizer = optim.Adam(self.actor.parameters(), lr=1e-5, amsgrad=True)
+        self.actor_optimizer = optim.Adam(self.actor.parameters(), lr=1e-4, amsgrad=True)
 
         self.critic = Critic(state_dim, action_dim)
         self.critic_target = Critic(state_dim, action_dim)
@@ -73,7 +77,7 @@ class DDPGAgent:
         self.action_high = torch.FloatTensor(action_high).to(device)
         self.noise_scale = 0.05
         self.noise_decay = 0.98
-        self.actor_updates_per_critic_update = 10
+        self.actor_updates_per_critic_update = 1
 
     def select_action(self, state):
         state = torch.FloatTensor(state).to(device)
@@ -87,22 +91,17 @@ class DDPGAgent:
     def decay_noise(self):
         self.noise_scale *= self.noise_decay
 
-    def train(self, replay_buffer, iterations, batch_size, discount=0.99, tau=1e-5):
+    def train(self, replay_buffer, iterations, batch_size, discount=1e-2, tau=1e-5):
         print("Initial losses:")
         print(f"Critic loss: {self.get_critic_loss(replay_buffer, batch_size, discount)}")
         print(f"Actor loss: {self.get_actor_loss(replay_buffer, batch_size)}")
 
-        for _ in range(iterations):
+        for _ in tqdm(range(iterations), desc="Training", unit="iteration"):
+            # Sample from the replay buffer
             state, action, next_state, reward, done = replay_buffer.sample(batch_size)
-            
-            state = torch.FloatTensor(state).to(device)
-            action = torch.FloatTensor(action).to(device)
-            next_state = torch.FloatTensor(next_state).to(device)
-            reward = torch.FloatTensor(reward).reshape(-1, 1).to(device)
-            done = torch.FloatTensor(done).reshape(-1, 1).to(device)
 
             target_Q = self.critic_target(next_state, self.actor(next_state))
-            target_Q = reward + (done * discount * target_Q).detach()
+            target_Q = reward + (done * (1 - discount) * target_Q).detach()
 
             current_Q = self.critic(state, action)
 
@@ -128,47 +127,54 @@ class DDPGAgent:
 
     def get_critic_loss(self, replay_buffer, batch_size, discount):
         state, action, next_state, reward, done = replay_buffer.sample(batch_size)
-        state = torch.FloatTensor(state).to(device)
-        action = torch.FloatTensor(action).to(device)
-        next_state = torch.FloatTensor(next_state).to(device)
-        reward = torch.FloatTensor(reward).reshape(-1, 1).to(device)
-        done = torch.FloatTensor(done).reshape(-1, 1).to(device)
 
         target_Q = self.critic_target(next_state, self.actor(next_state))
-        target_Q = reward + (done * discount * target_Q).detach()
+        target_Q = reward + (done * (1 - discount) * target_Q).detach()
+        print("target_Q: ", target_Q)
         current_Q = self.critic(state, action)
+        print("current_Q: ", current_Q)
         return nn.functional.mse_loss(current_Q, target_Q).item()
 
     def get_actor_loss(self, replay_buffer, batch_size):
         state, _, _, _, _ = replay_buffer.sample(batch_size)
-        state = torch.FloatTensor(state).to(device)
         return -self.critic_target(state, self.actor(state)).mean().item()
 
 # Define a simple replay buffer
 class ReplayBuffer:
-    def __init__(self, max_size=1e6):
-        self.storage = []
-        self.max_size = max_size
+    def __init__(self, state_dim, action_dim, max_size=1e6):
+        self.max_size = int(max_size)
         self.ptr = 0
+        self.size = 0
 
-    def add(self, transition):
-        if len(self.storage) == self.max_size:
-            self.storage[int(self.ptr)] = transition
-            self.ptr = (self.ptr + 1) % self.max_size
-        else:
-            self.storage.append(transition)
+        self.state = np.zeros((self.max_size, state_dim), dtype=np.float32)
+        self.action = np.zeros((self.max_size, action_dim), dtype=np.float32)
+        self.next_state = np.zeros((self.max_size, state_dim), dtype=np.float32)
+        self.reward = np.zeros((self.max_size, 1), dtype=np.float32)
+        self.done = np.zeros((self.max_size, 1), dtype=np.float32)
+
+    def add(self, state, action, next_state, reward, done):
+        self.state[self.ptr] = state
+        self.action[self.ptr] = action
+        self.next_state[self.ptr] = next_state
+        self.reward[self.ptr] = reward
+        self.done[self.ptr] = done
+
+        self.ptr = (self.ptr + 1) % self.max_size
+        self.size = min(self.size + 1, self.max_size)
 
     def sample(self, batch_size):
-        ind = np.random.randint(0, len(self.storage), size=batch_size)
-        batch_states, batch_actions, batch_next_states, batch_rewards, batch_dones = [], [], [], [], []
-        for i in ind: 
-            state, action, next_state, reward, done = self.storage[i]
-            batch_states.append(np.asarray(state))
-            batch_actions.append(np.asarray(action))
-            batch_next_states.append(np.asarray(next_state))
-            batch_rewards.append(np.asarray(reward))
-            batch_dones.append(np.asarray(done))
-        return np.array(batch_states), np.array(batch_actions), np.array(batch_next_states), np.array(batch_rewards).reshape(-1, 1), np.array(batch_dones).reshape(-1, 1)
+        ind = np.random.randint(0, self.size, size=batch_size)
+        return (
+            torch.FloatTensor(self.state[ind]).to(device),
+            torch.FloatTensor(self.action[ind]).to(device),
+            torch.FloatTensor(self.next_state[ind]).to(device),
+            torch.FloatTensor(self.reward[ind]).to(device),
+            torch.FloatTensor(self.done[ind]).to(device)
+        )
+
+REPLAY_BUFFER_BATCH_SIZE = 20000
+TRAINING_ITERATIONS = 250
+TRAINING_BEGIN = 2
 
 def main():
     num_envs = 128
@@ -187,9 +193,10 @@ def main():
     action_dim = envs.single_action_space.shape[0]
     action_low = envs.single_action_space.low
     action_high = envs.single_action_space.high
+    assert action_low == -action_high
 
     agent = DDPGAgent(state_dim, action_dim, action_low, action_high)
-    replay_buffer = ReplayBuffer()
+    replay_buffer = ReplayBuffer(state_dim, action_dim)
 
     total_timesteps = 0
     max_timesteps = 2000000
@@ -202,6 +209,8 @@ def main():
         state = state_dict['observation']  # Extract the 'observation' part
     else:
         state, _ = envs.reset()
+
+    state[:, 2] /= 8
 
     episode_rewards = [0] * num_envs
     episode_lengths = [0] * num_envs
@@ -216,10 +225,15 @@ def main():
     total_episode_reward = 0
     iter_count = 0
 
+    flag = False
+
     while total_timesteps < max_timesteps:
-        if total_timesteps < 50000:
+        if total_timesteps <= TRAINING_BEGIN * REPLAY_BUFFER_BATCH_SIZE:
             action = np.array([envs.single_action_space.sample() for _ in range(num_envs)])
         else:
+            if not flag:
+                print("Starting action...")
+                flag = True
             action = np.array([agent.select_action_with_noise(s) for s in state])
             agent.decay_noise()  # Decay the noise after each action selection
         
@@ -230,6 +244,7 @@ def main():
             next_state = next_state_dict['observation']  # Extract the 'observation' part
         else:
             next_state = next_state_dict
+        next_state[:, 2] /= 8
         done = np.logical_or(terminated, truncated)
 
         for i in range(num_envs):
@@ -244,14 +259,14 @@ def main():
                     final_obs = info['final_observation'][i]['observation']
                 else:
                     final_obs = info['final_observation'][i]
-                replay_buffer.add((state[i], action[i], final_obs, reward[i], 1.0))
+                replay_buffer.add(state[i], action[i], final_obs, reward[i], 1.0)
                 total_episodes += 1
                 total_episode_reward += episode_rewards[i]
                 episode_num += 1
                 episode_rewards[i] = 0
                 episode_lengths[i] = 0
             else:
-                replay_buffer.add((state[i], action[i], next_state[i], reward[i], 0.0))
+                replay_buffer.add(state[i], action[i], next_state[i], reward[i], 0.0)
 
         state = next_state
         total_timesteps += num_envs
@@ -262,25 +277,25 @@ def main():
         avg_reward_episode = total_episode_reward / total_episodes if total_episodes > 0 else 0
         # pbar.set_description(f"Reward (3000): {avg_reward_3000:.2f} | Reward (Ep): {avg_reward_episode:.2f} | Episodes: {total_episodes} | Buffer size: {len(replay_buffer.storage):.1e}")
 
-        REPLAY_BUFFER_BATCH_SIZE = 20000
-        TRAIN_FREQ = 100
+        TRAIN_FREQ = REPLAY_BUFFER_BATCH_SIZE // num_envs
 
-        if iter_count % TRAIN_FREQ == 0:
-            lookback = min(REPLAY_BUFFER_BATCH_SIZE, len(replay_buffer.storage))
-            if lookback > 0:
-                recent_rewards = [exp[3] for exp in replay_buffer.storage[-lookback:]]  # Get rewards from last 1000 experiences
-            agent.train(replay_buffer, iterations=min(100, lookback // 100), batch_size=REPLAY_BUFFER_BATCH_SIZE)
-            print(f"Reward (3000): {avg_reward_3000:.2f} | Reward (Ep): {avg_reward_episode:.2f} | Episodes: {total_episodes} | Buffer size: {len(replay_buffer.storage):.1e}")
+        if iter_count >= TRAIN_FREQ * TRAINING_BEGIN and iter_count % TRAIN_FREQ == 0 and replay_buffer.size >= REPLAY_BUFFER_BATCH_SIZE:
+            print("Training...")
+            agent.train(replay_buffer, iterations=TRAINING_ITERATIONS, batch_size=REPLAY_BUFFER_BATCH_SIZE)
+            print(f"Reward (3000): {avg_reward_3000:.2f} | Reward (Ep): {avg_reward_episode:.2f} | Episodes: {total_episodes} | Buffer size: {replay_buffer.size:.1e}")
             print("Noise scale: ", agent.noise_scale)
 
-        SAVE_FREQ = 1000
-        
+        SAVE_FREQ = 500
+
+        if iter_count % SAVE_FREQ == 0:
+            torch.save(agent.actor.state_dict(), WEIGHTS_DIR / f"ddpg_ant_actor_{iter_count}.pth")
+            torch.save(agent.critic.state_dict(), WEIGHTS_DIR / f"ddpg_ant_critic_{iter_count}.pth")
 
         iter_count += 1
 
     # save model
-    torch.save(agent.actor.state_dict(), "ddpg_ant_actor.pth")
-    torch.save(agent.critic.state_dict(), "ddpg_ant_critic.pth")
+    torch.save(agent.actor.state_dict(), WEIGHTS_DIR / "ddpg_ant_actor.pth")
+    torch.save(agent.critic.state_dict(), WEIGHTS_DIR / "ddpg_ant_critic.pth")
 
     pbar.close()
 
