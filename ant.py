@@ -56,25 +56,30 @@ class Critic(nn.Module):
         return self.layers(x)
         # return nn.ReLU()(self.layers(x)) * -1
 
-class DDPGAgent:
+class TD3Agent:
     def __init__(self, state_dim, action_dim, action_low, action_high):
-        # TODO: is this initialization correct?
         self.actor = Actor(state_dim, action_dim, action_low, action_high)
         self.actor_target = Actor(state_dim, action_dim, action_low, action_high)
         self.actor_target.load_state_dict(self.actor.state_dict())
-        self.actor_optimizer = optim.Adam(self.actor.parameters(), lr=1e-3, amsgrad=True)
+        self.actor_optimizer = optim.Adam(self.actor.parameters(), lr=3e-4)
 
-        self.critic = Critic(state_dim, action_dim)
-        self.critic_target = Critic(state_dim, action_dim)
-        self.critic_target.load_state_dict(self.critic.state_dict())
-        self.critic_optimizer = optim.Adam(self.critic.parameters(), lr=1e-3, amsgrad=True)
+        self.critic1 = Critic(state_dim, action_dim)
+        self.critic2 = Critic(state_dim, action_dim)
+        self.critic1_target = Critic(state_dim, action_dim)
+        self.critic2_target = Critic(state_dim, action_dim)
+        self.critic1_target.load_state_dict(self.critic1.state_dict())
+        self.critic2_target.load_state_dict(self.critic2.state_dict())
+        self.critic1_optimizer = optim.Adam(self.critic1.parameters(), lr=3e-4)
+        self.critic2_optimizer = optim.Adam(self.critic2.parameters(), lr=3e-4)
 
         self.action_low = torch.FloatTensor(action_low).to(device)
         self.action_high = torch.FloatTensor(action_high).to(device)
         self.noise_scale = 0.1
         self.noise_decay = 0.99
-
-        self.actor_updates_per_critic_update = 1
+        self.policy_noise = 0.2
+        self.noise_clip = 0.5
+        self.policy_freq = 2
+        self.total_it = 0
 
     def select_action(self, state):
         state = torch.FloatTensor(state).to(device)
@@ -88,51 +93,73 @@ class DDPGAgent:
     def decay_noise(self):
         self.noise_scale *= self.noise_decay
 
-    def train(self, replay_buffer, iterations, batch_size, discount=0.999, tau=1e-6):
-        print("Initial losses:")
-        self.print_loss(replay_buffer, batch_size, discount)
-
+    def train(self, replay_buffer, iterations, batch_size, discount=0.99, tau=0.005):
         for _ in tqdm(range(iterations), desc="Training", unit="iteration"):
+            self.total_it += 1
+            
             # Sample from the replay buffer
             state, action, next_state, reward, done = replay_buffer.sample(batch_size)
 
-            target_Q = self.critic_target(next_state, self.actor_target(next_state))
-            target_Q = reward + (done * discount * target_Q).detach()
+            with torch.no_grad():
+                # Select action according to policy and add clipped noise
+                noise = (torch.randn_like(action) * self.policy_noise).clamp(-self.noise_clip, self.noise_clip)
+                next_action = (self.actor_target(next_state) + noise).clamp(self.action_low, self.action_high)
 
-            current_Q = self.critic(state, action)
+                # Compute the target Q value
+                target_Q1 = self.critic1_target(next_state, next_action)
+                target_Q2 = self.critic2_target(next_state, next_action)
+                target_Q = torch.min(target_Q1, target_Q2)
+                target_Q = reward + (1 - done) * discount * target_Q
 
-            self.critic_optimizer.zero_grad()
-            critic_loss = nn.functional.mse_loss(current_Q, target_Q)
+            # Get current Q estimates
+            current_Q1 = self.critic1(state, action)
+            current_Q2 = self.critic2(state, action)
+
+            # Compute critic loss
+            critic_loss = nn.functional.mse_loss(current_Q1, target_Q) + nn.functional.mse_loss(current_Q2, target_Q)
+
+            # Optimize the critics
+            self.critic1_optimizer.zero_grad()
+            self.critic2_optimizer.zero_grad()
             critic_loss.backward()
-            self.critic_optimizer.step()
-            self.soft_update(self.critic, self.critic_target, tau)
+            self.critic1_optimizer.step()
+            self.critic2_optimizer.step()
 
-            for _ in range(self.actor_updates_per_critic_update):
+            # Delayed policy updates
+            if self.total_it % self.policy_freq == 0:
+                # Compute actor loss
+                actor_loss = -self.critic1(state, self.actor(state)).mean()
+
+                # Optimize the actor
                 self.actor_optimizer.zero_grad()
-                actor_loss = -self.critic(state, self.actor(state)).mean()
                 actor_loss.backward()
                 self.actor_optimizer.step()
-                self.soft_update(self.actor, self.actor_target, tau)
 
-        print("Final losses:")
-        self.print_loss(replay_buffer, batch_size, discount)
-
-    def soft_update(self, local_model, target_model, tau):
-        for target_param, local_param in zip(target_model.parameters(), local_model.parameters()):
-            target_param.data = (tau * local_param.data + (1.0 - tau) * target_param.data).detach().clone()
+                # Update the frozen target models
+                for param, target_param in zip(self.critic1.parameters(), self.critic1_target.parameters()):
+                    target_param.data.copy_(tau * param.data + (1 - tau) * target_param.data)
+                for param, target_param in zip(self.critic2.parameters(), self.critic2_target.parameters()):
+                    target_param.data.copy_(tau * param.data + (1 - tau) * target_param.data)
+                for param, target_param in zip(self.actor.parameters(), self.actor_target.parameters()):
+                    target_param.data.copy_(tau * param.data + (1 - tau) * target_param.data)
 
     def print_loss(self, replay_buffer, batch_size, discount):
         with torch.no_grad():
             state, action, next_state, reward, done = replay_buffer.sample(batch_size)
 
-            print(f"Average critic target prediction", self.critic_target(state, action).mean().item())
-            print(f"critic target prediction", self.critic_target(state, action)[:10])
+            print(f"Average critic1 target prediction", self.critic1_target(state, action).mean().item())
+            print(f"critic1 target prediction", self.critic1_target(state, action)[:10])
+            print(f"Average critic2 target prediction", self.critic2_target(state, action).mean().item())
+            print(f"critic2 target prediction", self.critic2_target(state, action)[:10])
 
             # Compute critic loss
-            target_Q = self.critic_target(next_state, self.actor_target(next_state))
-            target_Q = reward + (done * discount * target_Q).detach()
-            current_Q = self.critic_target(state, action)
-            critic_loss = nn.functional.mse_loss(current_Q, target_Q).item()
+            target_Q1 = self.critic1_target(next_state, self.actor_target(next_state))
+            target_Q2 = self.critic2_target(next_state, self.actor_target(next_state))
+            target_Q = torch.min(target_Q1, target_Q2)
+            target_Q = reward + (1 - done) * discount * target_Q
+            current_Q1 = self.critic1_target(state, action)
+            current_Q2 = self.critic2_target(state, action)
+            critic_loss = nn.functional.mse_loss(current_Q1, target_Q).item() + nn.functional.mse_loss(current_Q2, target_Q).item()
 
             print(f"Average actor target prediction", self.actor_target(state).abs().mean().item())
             print(f"actor target prediction", self.actor_target(state)[:10])
