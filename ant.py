@@ -20,17 +20,13 @@ class Actor(nn.Module):
     def __init__(self, state_dim, action_dim, action_low, action_high):
         super(Actor, self).__init__()
         self.layers = nn.Sequential(
-            nn.Linear(state_dim, 1024),
+            nn.Linear(state_dim, 128),
             nn.ReLU(),
-            nn.Linear(1024, 1024),
+            nn.Linear(128, 128),
             nn.ReLU(),
-            nn.Linear(1024, 1024),
+            nn.Linear(128, 128),
             nn.ReLU(),
-            nn.Linear(1024, 1024),
-            nn.ReLU(),
-            nn.Linear(1024, 1024),
-            nn.ReLU(),
-            nn.Linear(1024, action_dim),
+            nn.Linear(128, action_dim),
             nn.Tanh()
         )
         self.action_low = torch.FloatTensor(action_low).to(device)
@@ -44,39 +40,40 @@ class Critic(nn.Module):
     def __init__(self, state_dim, action_dim):
         super(Critic, self).__init__()
         self.layers = nn.Sequential(
-            nn.Linear(state_dim + action_dim, 1024),
+            nn.Linear(state_dim + action_dim, 128),
             nn.ReLU(),
-            nn.Linear(1024, 1024),
+            nn.Linear(128, 128),
             nn.ReLU(),
-            nn.Linear(1024, 1024),
+            nn.Linear(128, 128),
             nn.ReLU(),
-            nn.Linear(1024, 1024),
-            nn.ReLU(),
-            nn.Linear(1024, 1024),
-            nn.ReLU(),
-            nn.Linear(1024, 1),
-            nn.Sigmoid(),
+            nn.Linear(128, 1),
         )
         self.to(device)
 
     def forward(self, state, action):
         x = torch.cat([state, action], dim=1)
-        return self.layers(x) - 1
+        # output should be negative
+        return self.layers(x)
+        # return nn.ReLU()(self.layers(x)) * -1
 
 class DDPGAgent:
     def __init__(self, state_dim, action_dim, action_low, action_high):
+        # TODO: is this initialization correct?
         self.actor = Actor(state_dim, action_dim, action_low, action_high)
-        self.actor_optimizer = optim.Adam(self.actor.parameters(), lr=1e-4, amsgrad=True)
+        self.actor_target = Actor(state_dim, action_dim, action_low, action_high)
+        self.actor_target.load_state_dict(self.actor.state_dict())
+        self.actor_optimizer = optim.Adam(self.actor.parameters(), lr=1e-3, amsgrad=True)
 
         self.critic = Critic(state_dim, action_dim)
         self.critic_target = Critic(state_dim, action_dim)
         self.critic_target.load_state_dict(self.critic.state_dict())
-        self.critic_optimizer = optim.Adam(self.critic.parameters(), lr=1e-5, amsgrad=True)
+        self.critic_optimizer = optim.Adam(self.critic.parameters(), lr=1e-3, amsgrad=True)
 
         self.action_low = torch.FloatTensor(action_low).to(device)
         self.action_high = torch.FloatTensor(action_high).to(device)
-        self.noise_scale = 0.05
-        self.noise_decay = 0.98
+        self.noise_scale = 0.1
+        self.noise_decay = 0.99
+
         self.actor_updates_per_critic_update = 1
 
     def select_action(self, state):
@@ -91,53 +88,60 @@ class DDPGAgent:
     def decay_noise(self):
         self.noise_scale *= self.noise_decay
 
-    def train(self, replay_buffer, iterations, batch_size, discount=1e-2, tau=1e-5):
+    def train(self, replay_buffer, iterations, batch_size, discount=0.999, tau=1e-6):
         print("Initial losses:")
-        print(f"Critic loss: {self.get_critic_loss(replay_buffer, batch_size, discount)}")
-        print(f"Actor loss: {self.get_actor_loss(replay_buffer, batch_size)}")
+        self.print_loss(replay_buffer, batch_size, discount)
 
         for _ in tqdm(range(iterations), desc="Training", unit="iteration"):
             # Sample from the replay buffer
             state, action, next_state, reward, done = replay_buffer.sample(batch_size)
 
-            target_Q = self.critic_target(next_state, self.actor(next_state))
-            target_Q = reward + (done * (1 - discount) * target_Q).detach()
+            target_Q = self.critic_target(next_state, self.actor_target(next_state))
+            target_Q = reward + (done * discount * target_Q).detach()
 
             current_Q = self.critic(state, action)
 
-            critic_loss = nn.functional.mse_loss(current_Q, target_Q)
-
             self.critic_optimizer.zero_grad()
+            critic_loss = nn.functional.mse_loss(current_Q, target_Q)
             critic_loss.backward()
             self.critic_optimizer.step()
+            self.soft_update(self.critic, self.critic_target, tau)
 
-            for param, target_param in zip(self.critic.parameters(), self.critic_target.parameters()):
-                target_param.data.copy_(tau * param.data + (1 - tau) * target_param.data)
-            
             for _ in range(self.actor_updates_per_critic_update):
-                actor_loss = -self.critic_target(state, self.actor(state)).mean()
-
                 self.actor_optimizer.zero_grad()
+                actor_loss = -self.critic(state, self.actor(state)).mean()
                 actor_loss.backward()
                 self.actor_optimizer.step()
+                self.soft_update(self.actor, self.actor_target, tau)
 
         print("Final losses:")
-        print(f"Critic loss: {self.get_critic_loss(replay_buffer, batch_size, discount)}")
-        print(f"Actor loss: {self.get_actor_loss(replay_buffer, batch_size)}")
+        self.print_loss(replay_buffer, batch_size, discount)
 
-    def get_critic_loss(self, replay_buffer, batch_size, discount):
-        state, action, next_state, reward, done = replay_buffer.sample(batch_size)
+    def soft_update(self, local_model, target_model, tau):
+        for target_param, local_param in zip(target_model.parameters(), local_model.parameters()):
+            target_param.data = (tau * local_param.data + (1.0 - tau) * target_param.data).detach().clone()
 
-        target_Q = self.critic_target(next_state, self.actor(next_state))
-        target_Q = reward + (done * (1 - discount) * target_Q).detach()
-        print("target_Q: ", target_Q)
-        current_Q = self.critic(state, action)
-        print("current_Q: ", current_Q)
-        return nn.functional.mse_loss(current_Q, target_Q).item()
+    def print_loss(self, replay_buffer, batch_size, discount):
+        with torch.no_grad():
+            state, action, next_state, reward, done = replay_buffer.sample(batch_size)
 
-    def get_actor_loss(self, replay_buffer, batch_size):
-        state, _, _, _, _ = replay_buffer.sample(batch_size)
-        return -self.critic_target(state, self.actor(state)).mean().item()
+            print(f"Average critic target prediction", self.critic_target(state, action).mean().item())
+            print(f"critic target prediction", self.critic_target(state, action)[:10])
+
+            # Compute critic loss
+            target_Q = self.critic_target(next_state, self.actor_target(next_state))
+            target_Q = reward + (done * discount * target_Q).detach()
+            current_Q = self.critic_target(state, action)
+            critic_loss = nn.functional.mse_loss(current_Q, target_Q).item()
+
+            print(f"Average actor target prediction", self.actor_target(state).abs().mean().item())
+            print(f"actor target prediction", self.actor_target(state)[:10])
+
+            # Compute actor loss
+            actor_loss = -self.critic_target(state, self.actor_target(state)).mean().item()
+
+            print(f"Critic loss: {critic_loss:.6f}")
+            print(f"Actor loss: {actor_loss:.6f}")
 
 # Define a simple replay buffer
 class ReplayBuffer:
@@ -165,6 +169,7 @@ class ReplayBuffer:
     def sample(self, batch_size):
         ind = np.random.randint(0, self.size, size=batch_size)
         return (
+            # TODO: check shapes
             torch.FloatTensor(self.state[ind]).to(device),
             torch.FloatTensor(self.action[ind]).to(device),
             torch.FloatTensor(self.next_state[ind]).to(device),
@@ -172,12 +177,12 @@ class ReplayBuffer:
             torch.FloatTensor(self.done[ind]).to(device)
         )
 
-REPLAY_BUFFER_BATCH_SIZE = 20000
-TRAINING_ITERATIONS = 250
+REPLAY_BUFFER_BATCH_SIZE = 40000
+TRAINING_ITERATIONS = 75
 TRAINING_BEGIN = 2
 
 def main():
-    num_envs = 128
+    num_envs = 256
     envs = AsyncVectorEnv([lambda: gym.make("Pendulum-v1") for i in range(num_envs)])
     envs.reset(seed=42)
     
@@ -246,6 +251,13 @@ def main():
             next_state = next_state_dict
         next_state[:, 2] /= 8
         done = np.logical_or(terminated, truncated)
+        # print("next_state:")
+        # print(next_state[:10])
+        # print("reward:")
+        # print(reward[:10])
+        # print("action:")
+        # print(action[:10])
+
 
         for i in range(num_envs):
             episode_rewards[i] += reward[i]
