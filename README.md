@@ -5,7 +5,7 @@ inverted pendulum. The objective is to swing up the pendulum and balance it. The
 project previously implemented a DDPG algorithm, and this version implements a
 TD3 algorithm.
 
-![Pendulum animation](gifs/episode_6.gif)
+![Pendulum animation](gifs/episode_10.gif)
 
 ## Features
 
