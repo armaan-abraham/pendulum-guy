@@ -14,7 +14,7 @@ from pendulum import WEIGHTS_DIR, Actor, device, max_abs_reward
 def main():
     # Parse command-line arguments
     parser = argparse.ArgumentParser(
-        description="Play Ant environment and optionally save animations."
+        description="Play environment and optionally save animations."
     )
     parser.add_argument(
         "--save", action="store_true", help="Save episode animations as GIFs"
