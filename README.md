@@ -7,6 +7,8 @@ TD3 algorithm.
 
 ![Pendulum animation](gifs/episode_10.gif)
 
+One interesting strategy we see from the above animation is that the agent doesn't put the pendulum straight up, but rather slightly angled right. This is likely because applying alternating torque is more difficult than applying constant small torque.
+
 ## Features
 
 - Trains an agent to balance an inverted pendulum
