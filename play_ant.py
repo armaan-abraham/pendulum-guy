@@ -17,7 +17,7 @@ def main():
     actor = Actor(state_dim, action_dim, action_low, action_high)
     
     # Load the trained weights
-    actor.load_state_dict(torch.load(WEIGHTS_DIR / "ddpg_ant_actor.pth", map_location=device))
+    actor.load_state_dict(torch.load(WEIGHTS_DIR / "td3_ant_actor.pth", map_location=device))
     actor.eval()  # Set the network to evaluation mode
 
     # Play episodes
@@ -29,9 +29,12 @@ def main():
         
         while not done:
             # Select action
-            state_tensor = torch.FloatTensor(state).unsqueeze(0).to(device)
+            state_tensor = torch.FloatTensor(state).to(device)
+            print(state_tensor.shape)
             with torch.no_grad():
-                action = actor(state_tensor).cpu().numpy().flatten()
+                action = actor(state_tensor).cpu().numpy()
+            print(action.shape)
+            print(action)
             
             # Take action in the environment
             next_state, reward, terminated, truncated, _ = env.step(action)
@@ -40,7 +43,7 @@ def main():
             total_reward += reward
             state = next_state
             
-            env.render()
+            # env.render()
         
         print(f"Episode {episode + 1} finished with total reward: {total_reward}")
 
