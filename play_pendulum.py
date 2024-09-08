@@ -8,7 +8,7 @@ import numpy as np
 import torch
 from PIL import Image
 
-from ant import WEIGHTS_DIR, Actor, device, max_abs_reward
+from pendulum import WEIGHTS_DIR, Actor, device, max_abs_reward
 
 
 def main():

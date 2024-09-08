@@ -6,7 +6,7 @@ import numpy as np
 import seaborn as sns
 import torch
 
-from ant import WEIGHTS_DIR, Actor, device
+from pendulum import WEIGHTS_DIR, Actor, device
 
 PLOT_DIR = Path(__file__).parent / "plots"
 
