@@ -34,8 +34,6 @@ Thumbs.db
 *.bak
 *.swp
 
-# PyTorch specific
-*.pth
 
 # Gymnasium specific
 *.mp4
