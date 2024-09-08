@@ -12,7 +12,7 @@ WEIGHTS_DIR = Path(__file__).parent / "weights"
 # Add this at the beginning of the file
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 if device.type == "cuda":
-    print("Using GPU for training.")
+    print("GPU found")
 else:
     print("WARNING: GPU not available. Using CPU for training. This may be slower.")
 
@@ -225,6 +225,7 @@ PROPORTION_NEW_DATA = 1
 MAX_TIMESTEPS = int(1e8)
 NUM_ENVS = 128
 TRAIN_FREQ = (REPLAY_BUFFER_BATCH_SIZE * PROPORTION_NEW_DATA) // NUM_ENVS
+max_abs_reward = 16.2736044
 print("TRAIN_FREQ: ", TRAIN_FREQ)
 
 def main():
@@ -250,7 +251,6 @@ def main():
     total_timesteps = 0
     episode_num = 0
 
-    max_abs_reward = 16.2736044
 
     if isinstance(envs.single_observation_space, gym.spaces.Dict):
         state_dict, _ = envs.reset()

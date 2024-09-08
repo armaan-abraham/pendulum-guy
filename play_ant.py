@@ -1,7 +1,8 @@
 import numpy as np
 import torch
 import gymnasium as gym
-from ant import Actor, device, WEIGHTS_DIR
+import time
+from ant import Actor, device, WEIGHTS_DIR, max_abs_reward
 
 def main():
     # Load the environment
@@ -28,22 +29,21 @@ def main():
         total_reward = 0
         
         while not done:
+            time.sleep(0.01)
+
+            state[2] /= 8.
             # Select action
-            state_tensor = torch.FloatTensor(state).to(device)
-            print(state_tensor.shape)
+            state_tensor = torch.Tensor(state).to(device)
             with torch.no_grad():
                 action = actor(state_tensor).cpu().numpy()
-            print(action.shape)
-            print(action)
             
             # Take action in the environment
             next_state, reward, terminated, truncated, _ = env.step(action)
+            reward = reward / max_abs_reward
             done = terminated or truncated
             
             total_reward += reward
             state = next_state
-            
-            # env.render()
         
         print(f"Episode {episode + 1} finished with total reward: {total_reward}")
 
